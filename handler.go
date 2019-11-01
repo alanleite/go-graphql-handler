@@ -33,39 +33,47 @@ type Handler struct {
 }
 
 type RequestOptions struct {
-	Query         string                 `json:"query" url:"query" schema:"query"`
-	Variables     map[string]interface{} `json:"variables" url:"variables" schema:"variables"`
-	OperationName string                 `json:"operationName" url:"operationName" schema:"operationName"`
+	Query              string                 `json:"query" url:"query" schema:"query"`
+	Variables          map[string]interface{} `json:"variables" url:"variables" schema:"variables"`
+	OperationName      string                 `json:"operationName" url:"operationName" schema:"operationName"`
+	Extensions         map[string]interface{} `json:"extensions" url:"extensions" schema:"extensions"`
+	Persisted          bool
+	HasPersistedParams bool
 }
 
 // a workaround for getting`variables` as a JSON string
 type requestOptionsCompatibility struct {
-	Query         string `json:"query" url:"query" schema:"query"`
-	Variables     string `json:"variables" url:"variables" schema:"variables"`
-	OperationName string `json:"operationName" url:"operationName" schema:"operationName"`
+	Query         string                 `json:"query" url:"query" schema:"query"`
+	Variables     string                 `json:"variables" url:"variables" schema:"variables"`
+	OperationName string                 `json:"operationName" url:"operationName" schema:"operationName"`
+	Extensions    map[string]interface{} `json:"extensions" url:"extensions" schema:"extensions"`
 }
 
 func getFromForm(values url.Values) *RequestOptions {
 	query := values.Get("query")
-	if query != "" {
-		// get variables map
-		variables := make(map[string]interface{}, len(values))
-		variablesStr := values.Get("variables")
-		json.Unmarshal([]byte(variablesStr), &variables)
+	variablesStr := values.Get("variables")
+	extensionsStr := values.Get("extensions")
 
-		return &RequestOptions{
-			Query:         query,
-			Variables:     variables,
-			OperationName: values.Get("operationName"),
-		}
+	variables := make(map[string]interface{}, len(values))
+	json.Unmarshal([]byte(variablesStr), &variables)
+
+	extensions := make(map[string]interface{}, len(values))
+	json.Unmarshal([]byte(extensionsStr), &extensions)
+
+	return &RequestOptions{
+		Query:         query,
+		Variables:     variables,
+		OperationName: values.Get("operationName"),
+		Extensions:    extensions,
 	}
-
-	return nil
 }
 
 // RequestOptions Parses a http.Request into GraphQL request options struct
 func NewRequestOptions(r *http.Request) *RequestOptions {
-	if reqOpt := getFromForm(r.URL.Query()); reqOpt != nil {
+
+	reqOpt := getFromForm(r.URL.Query())
+
+	if r.Method != "POST" && reqOpt != nil {
 		return reqOpt
 	}
 
@@ -127,6 +135,20 @@ func NewRequestOptions(r *http.Request) *RequestOptions {
 func (h *Handler) ContextHandler(ctx context.Context, w http.ResponseWriter, r *http.Request) {
 	// get query
 	opts := NewRequestOptions(r)
+
+	// persisted query implementation
+	opts, err := persistedQueryCheck(opts)
+
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(err.Error()))
+		return
+	}
+
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(204)
+		return
+	}
 
 	// execute graphql query
 	params := graphql.Params{
